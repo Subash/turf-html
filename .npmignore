@@ -1,3 +1,5 @@
-coverage
-node_modules
-.editorconfig
+/node_modules
+/src
+/tests
+/.prettierrc
+/tsconfig.json

@@ -1,15 +1,19 @@
 {
   "name": "turf-html",
   "version": "0.1.0",
-  "description": "HTML macros with Kit support",
-  "main": "src/turf.js",
-  "scripts": {
-    "test": "jest"
+  "description": "HTML Macros with Kit Support",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./lib/turf.d.ts",
+      "default": "./lib/turf.js"
+    }
   },
-  "jest": {
-    "modulePathIgnorePatterns": [
-      "fixtures"
-    ]
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "npm run build",
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -27,6 +31,7 @@
   },
   "homepage": "https://github.com/Subash/turf-html#readme",
   "devDependencies": {
-    "jest": "^26.0.1"
+    "@types/node": "^26.0.1",
+    "typescript": "^6.0.3"
   }
 }
