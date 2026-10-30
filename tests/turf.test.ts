@@ -71,15 +71,50 @@ describe('compile', () => {
 
   test('detects recursive includes', async () => {
     const file = await fixture('recursive.kit');
-    await assert.rejects(compile(file.inputData, { file: file.input }), /Recursive include detected/);
+    await assert.rejects(compile(file.inputData, { file: file.input }), {
+      name: 'TurfSyntaxError',
+      code: 'TURF_RECURSIVE_INCLUDE',
+      message: `Recursive include detected: ${file.input}`,
+      file: file.input,
+      line: 1,
+      column: 6
+    });
   });
 
-  test('reports a missing included file', async () => {
+  test('reports a missing included file at the directive', async () => {
     const file = await fixture('basic.kit');
-    await assert.rejects(
-      compile('<!-- @include does-not-exist -->', { file: file.input }),
-      /Failed to find the included file/
-    );
+    await assert.rejects(compile('<p>\n  <!-- @include does-not-exist -->', { file: file.input }), {
+      name: 'TurfSyntaxError',
+      code: 'TURF_FILE_NOT_FOUND',
+      message: 'Failed to find the included file `does-not-exist`',
+      file: file.input,
+      line: 2,
+      column: 8
+    });
+  });
+
+  test('reports a missing compiled file at the directive', async () => {
+    const file = await fixture('basic.kit');
+    const compileDelegate = async () => 'compiled';
+    await assert.rejects(compile('<p>\n<!-- @compile missing.scss -->', { file: file.input, compileDelegate }), {
+      name: 'TurfSyntaxError',
+      code: 'TURF_FILE_NOT_FOUND',
+      file: file.input,
+      line: 2,
+      column: 6
+    });
+  });
+
+  test('passes the directive location to the compile delegate and keeps its errors', async () => {
+    const file = await fixture('basic.kit');
+    const error = new Error('Delegate failed');
+    const contexts: unknown[] = [];
+    const compileDelegate = async (_file: string, context: unknown) => {
+      contexts.push(context);
+      throw error;
+    };
+    await assert.rejects(compile('<p>\n  <!-- @compile file.css -->', { file: file.input, compileDelegate }), error);
+    assert.deepEqual(contexts, [{ file: file.input, location: { line: 2, column: 8, offset: 11 } }]);
   });
 
   test('includes non-template and compiled files as base64', async () => {

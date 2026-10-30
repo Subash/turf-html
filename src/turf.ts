@@ -4,12 +4,22 @@ import path from 'node:path';
 import type { EvaluatorOptions, InitialVariables, RenderContext } from './evaluator.ts';
 import { TurfEvaluator } from './evaluator.ts';
 import { TurfParser } from './parser.ts';
+import type { SourcePosition } from './scanner.ts';
+import TurfSyntaxError from './syntax-error.ts';
 
 export type { InitialVariables } from './evaluator.ts';
 export { default as TurfSyntaxError } from './syntax-error.ts';
 export type { TurfSyntaxErrorOptions } from './syntax-error.ts';
 
-export type CompileDelegate = (absolutePath: string) => string | Buffer | Promise<string | Buffer>;
+export interface CompileDelegateContext {
+  file: string;
+  location: SourcePosition;
+}
+
+export type CompileDelegate = (
+  absolutePath: string,
+  context: CompileDelegateContext
+) => string | Buffer | Promise<string | Buffer>;
 
 export interface CompileOptions {
   file: string;
@@ -59,7 +69,7 @@ class Compiler {
   }
 
   async #renderInclude(requestedPath: string, context: RenderContext): Promise<string> {
-    const file = await this.#resolveFile(requestedPath);
+    const file = await this.#resolveFile(requestedPath, context);
     const data = await readFile(file);
 
     if (!this.#isTemplate(file)) {
@@ -73,9 +83,9 @@ class Compiler {
   }
 
   async #renderCompile(requestedPath: string, context: RenderContext): Promise<string> {
-    const file = await this.#resolveFile(requestedPath);
+    const file = await this.#resolveFile(requestedPath, context);
     const compileDelegate = this.#compileDelegate!;
-    const output = await compileDelegate(file);
+    const output = await compileDelegate(file, { file: this.#file, location: context.location });
     if (Buffer.isBuffer(output)) return output.toString('base64');
     const normalizedOutput = output.replace(/\r\n/g, '\n');
     if (context.base64) return Buffer.from(normalizedOutput, 'utf8').toString('base64');
@@ -94,18 +104,27 @@ class Compiler {
     return TEMPLATE_EXTENSIONS.includes(extension);
   }
 
-  async #resolveFile(requestedPath: string): Promise<string> {
+  async #resolveFile(requestedPath: string, context: RenderContext): Promise<string> {
     const candidates = this.#getFileCandidates(requestedPath);
 
     for (const candidate of candidates) {
       if (!(await this.#isFile(candidate))) continue;
       if (this.#ancestry.includes(candidate)) {
-        throw new Error(`Recursive include detected: ${candidate}`);
+        throw this.#createSyntaxError(context, 'TURF_RECURSIVE_INCLUDE', `Recursive include detected: ${candidate}`);
       }
       return candidate;
     }
 
-    throw new Error(`Failed to find the included file \`${requestedPath}\``);
+    throw this.#createSyntaxError(
+      context,
+      'TURF_FILE_NOT_FOUND',
+      `Failed to find the included file \`${requestedPath}\``
+    );
+  }
+
+  #createSyntaxError(context: RenderContext, code: string, message: string): TurfSyntaxError {
+    const { line, column, offset } = context.location;
+    return new TurfSyntaxError(message, { code, file: this.#file, line, column, offset });
   }
 
   #getFileCandidates(requestedPath: string): string[] {
