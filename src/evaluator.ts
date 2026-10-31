@@ -1,3 +1,5 @@
+import type { OutputPiece } from './output.ts';
+import { getOutputText, sliceOutput } from './output.ts';
 import type { DirectiveSegment, GetOperation, ParsedSource, PathOperation, SetOperation } from './parser.ts';
 import type { SourceEnvelope, SourcePosition } from './scanner.ts';
 import TurfSyntaxError from './syntax-error.ts';
@@ -11,7 +13,8 @@ export interface RenderContext {
   location: SourcePosition;
 }
 
-export type EvaluationRenderer = (path: string, context: RenderContext) => string | Promise<string>;
+export type RendererOutput = string | OutputPiece[];
+export type EvaluationRenderer = (path: string, context: RenderContext) => RendererOutput | Promise<RendererOutput>;
 
 export interface EvaluatorOptions {
   variables?: InitialVariables;
@@ -20,7 +23,7 @@ export interface EvaluatorOptions {
 }
 
 interface EvaluationResult {
-  output: string;
+  output: OutputPiece[];
   silent: boolean;
 }
 
@@ -28,7 +31,7 @@ export class TurfEvaluator {
   #parsed: ParsedSource;
   #options: EvaluatorOptions;
   #scope: Map<string, string>;
-  #chunks: string[] = [];
+  #pieces: OutputPiece[] = [];
   #cursor: number = 0;
 
   constructor(parsed: unknown, options: EvaluatorOptions = {}) {
@@ -80,12 +83,20 @@ export class TurfEvaluator {
   }
 
   async evaluate(): Promise<string> {
+    return getOutputText(await this.evaluatePieces());
+  }
+
+  async evaluatePieces(): Promise<OutputPiece[]> {
     for (const segment of this.#getDirectiveSegments()) {
       await this.#evaluateDirective(segment);
     }
 
-    this.#chunks.push(this.#parsed.source.slice(this.#cursor));
-    return this.#chunks.join('');
+    this.#pieces.push(this.#createSourcePiece(this.#cursor, this.#parsed.source.length));
+    return this.#pieces;
+  }
+
+  #createSourcePiece(start: number, end: number): OutputPiece {
+    return { text: this.#parsed.source.slice(start, end), file: this.#parsed.file };
   }
 
   #getDirectiveSegments(): DirectiveSegment[] {
@@ -95,10 +106,10 @@ export class TurfEvaluator {
   async #evaluateDirective(segment: DirectiveSegment): Promise<void> {
     const result = await this.#evaluateOperation(segment);
     const range = this.#createReplacementRange(segment, result.silent);
-    const unchangedSource = this.#parsed.source.slice(this.#cursor, range.start);
+    const unchangedSource = this.#createSourcePiece(this.#cursor, range.start);
     const replacement = this.#createReplacementOutput(segment, result);
-    this.#chunks.push(unchangedSource);
-    this.#chunks.push(replacement);
+    this.#pieces.push(unchangedSource);
+    this.#pieces.push(...replacement);
     this.#cursor = range.end;
   }
 
@@ -120,16 +131,16 @@ export class TurfEvaluator {
 
   #assignVariable(operation: SetOperation): EvaluationResult {
     this.#scope.set(operation.name, operation.value);
-    return { output: '', silent: true };
+    return { output: [], silent: true };
   }
 
   #readVariable(operation: GetOperation, segment: DirectiveSegment): EvaluationResult {
     if (this.#scope.has(operation.name)) {
-      const output = this.#scope.get(operation.name) as string;
-      return { output, silent: false };
+      const text = this.#scope.get(operation.name) as string;
+      return { output: [{ text }], silent: false };
     }
 
-    if (operation.optional) return { output: '', silent: false };
+    if (operation.optional) return { output: [], silent: false };
 
     throw this.#createSyntaxError(segment, 'TURF_MISSING_VARIABLE', `Undefined variable: ${operation.originalName}.`);
   }
@@ -137,7 +148,7 @@ export class TurfEvaluator {
   async #renderPaths(operation: PathOperation, segment: DirectiveSegment): Promise<EvaluationResult> {
     const renderer = this.#getOperationRenderer(operation, segment);
 
-    const outputs: string[] = [];
+    const outputs: OutputPiece[][] = [];
     for (const path of operation.paths) {
       const output = await this.#renderPath(renderer, path, operation, segment);
       outputs.push(output);
@@ -166,11 +177,11 @@ export class TurfEvaluator {
     path: string,
     operation: PathOperation,
     segment: DirectiveSegment
-  ): Promise<string> {
+  ): Promise<OutputPiece[]> {
     const context = this.#createRenderContext(operation, segment);
     const output = await renderer(path, context);
     this.#assertValidRendererOutput(output, operation);
-    return output;
+    return typeof output === 'string' ? [{ text: output }] : output;
   }
 
   #createRenderContext(operation: PathOperation, segment: DirectiveSegment): RenderContext {
@@ -181,20 +192,24 @@ export class TurfEvaluator {
     return { base64, variables, file, location };
   }
 
-  #assertValidRendererOutput(output: unknown, operation: PathOperation): asserts output is string {
-    if (typeof output !== 'string') {
+  #assertValidRendererOutput(output: unknown, operation: PathOperation): asserts output is RendererOutput {
+    if (typeof output !== 'string' && !Array.isArray(output)) {
       throw new TypeError(`${operation.type} renderer must return a string.`);
     }
   }
 
-  #joinPathOutputs(outputs: string[]): string {
+  #joinPathOutputs(outputs: OutputPiece[][]): OutputPiece[] {
     return outputs.reduce((combined, output) => this.#joinPathOutput(combined, output));
   }
 
-  #joinPathOutput(previousOutput: string, nextOutput: string): string {
-    const previous = previousOutput.replace(/(?:\n[\t ]*)+$/u, '');
-    const next = nextOutput.replace(/^(?:[\t ]*\n)+/u, '');
-    return `${previous}\n${next}`;
+  #joinPathOutput(previousOutput: OutputPiece[], nextOutput: OutputPiece[]): OutputPiece[] {
+    const previousText = getOutputText(previousOutput);
+    const nextText = getOutputText(nextOutput);
+    const previousEnd = previousText.replace(/(?:\n[\t ]*)+$/u, '').length;
+    const nextStart = nextText.length - nextText.replace(/^(?:[\t ]*\n)+/u, '').length;
+    const previous = sliceOutput(previousOutput, 0, previousEnd);
+    const next = sliceOutput(nextOutput, nextStart, nextText.length);
+    return [...previous, { text: '\n' }, ...next];
   }
 
   #createReplacementRange(segment: DirectiveSegment, silent: boolean): SourceEnvelope {
@@ -223,26 +238,33 @@ export class TurfEvaluator {
     return end;
   }
 
-  #createReplacementOutput(segment: DirectiveSegment, result: EvaluationResult): string {
+  #createReplacementOutput(segment: DirectiveSegment, result: EvaluationResult): OutputPiece[] {
     if (segment.layout.kind !== 'standalone') return result.output;
-    if (result.output === '') return '';
+    if (getOutputText(result.output) === '') return [];
 
     const indented = this.#indentOutput(result.output, segment.layout.indent);
     const envelope = this.#parsed.source.slice(segment.layout.envelope.start, segment.layout.envelope.end);
-    if (!this.#needsTrailingLineEnding(indented, envelope)) return indented;
+    if (!this.#needsTrailingLineEnding(getOutputText(indented), envelope)) return indented;
 
-    return `${indented}\n`;
+    return [...indented, { text: '\n' }];
   }
 
-  #indentOutput(output: string, indent: string): string {
-    const lines = output.split('\n');
-    const indentedLines = lines.map((line) => this.#indentLine(line, indent));
-    return indentedLines.join('\n');
-  }
+  #indentOutput(output: OutputPiece[], indent: string): OutputPiece[] {
+    const indented: OutputPiece[] = [];
+    let isLineStart = true;
 
-  #indentLine(line: string, indent: string): string {
-    if (line.length === 0) return line;
-    return indent + line;
+    for (const piece of output) {
+      for (const [index, part] of piece.text.split('\n').entries()) {
+        if (index > 0) indented.push({ ...piece, text: '\n' });
+        if (index > 0) isLineStart = true;
+        if (part.length === 0) continue;
+        if (isLineStart && indent.length > 0) indented.push({ text: indent });
+        indented.push({ ...piece, text: part });
+        isLineStart = false;
+      }
+    }
+
+    return indented;
   }
 
   #needsTrailingLineEnding(output: string, envelope: string): boolean {
@@ -273,5 +295,9 @@ export class TurfEvaluator {
 
   static evaluate(parsed: unknown, options?: EvaluatorOptions): Promise<string> {
     return new TurfEvaluator(parsed, options).evaluate();
+  }
+
+  static evaluatePieces(parsed: unknown, options?: EvaluatorOptions): Promise<OutputPiece[]> {
+    return new TurfEvaluator(parsed, options).evaluatePieces();
   }
 }

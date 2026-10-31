@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import TurfSyntaxError from '../src/syntax-error.ts';
-import compile from '../src/turf.ts';
+import compile, { compileWithSources } from '../src/turf.ts';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 
@@ -157,5 +158,57 @@ describe('compile', () => {
       name: 'TypeError',
       message: 'file must be an absolute path.'
     });
+  });
+
+  test('compileWithSources returns the same code as compile', async () => {
+    for (const name of ['basic.kit', 'precedence.kit']) {
+      const file = await fixture(name);
+      const result = await compileWithSources(file.inputData, { file: file.input });
+      assert.equal(result.code, await compile(file.inputData, { file: file.input }));
+    }
+  });
+
+  test('compileWithSources reports only literal template text with the file it came from', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'turf-sources-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await fs.mkdir(path.join(root, 'partials'));
+    const page = path.join(root, 'page.kit');
+    const header = path.join(root, 'partials/_header.kit');
+    await fs.writeFile(header, '<header><img src="logo.svg"></header>\n<nav>menu</nav>');
+    await fs.writeFile(path.join(root, 'file.css'), 'a { color: red; }');
+    await fs.writeFile(path.join(root, 'icon.svg'), '<svg/>');
+    const source = [
+      '<!-- $logo = img/a.png -->',
+      '<div>',
+      '  <!-- @include partials/header.kit -->',
+      '</div>',
+      '<img src="<!-- $logo -->">',
+      '<style><!-- @include file.css --></style>',
+      '<img src="data:image/svg+xml;base64,<!-- @include-base64 icon.svg -->">',
+      '<script><!-- @compile file.css --></script>'
+    ].join('\n');
+    await fs.writeFile(page, source);
+
+    const { code, sources } = await compileWithSources(source, { file: page, compileDelegate: () => 'compiled' });
+    const fileAt = (text: string, from = 0) => {
+      const offset = code.indexOf(text, from);
+      assert.notEqual(offset, -1, text);
+      return sources.find((range) => offset >= range.start && offset < range.end)?.file;
+    };
+
+    assert.equal(code, await compile(source, { file: page, compileDelegate: () => 'compiled' }));
+    assert.equal(fileAt('<div>'), page);
+    assert.equal(fileAt('logo.svg'), header);
+    assert.equal(fileAt('<nav>'), header);
+    assert.equal(fileAt('  <nav>'), undefined);
+    assert.equal(fileAt('img/a.png'), undefined);
+    assert.equal(fileAt('a { color: red; }'), undefined);
+    assert.equal(fileAt(Buffer.from('<svg/>').toString('base64')), undefined);
+    assert.equal(fileAt('compiled'), undefined);
+    assert.equal(fileAt('<script>'), page);
+    for (const range of sources) {
+      const text = await fs.readFile(range.file, 'utf8');
+      assert.ok(text.includes(code.slice(range.start, range.end)), code.slice(range.start, range.end));
+    }
   });
 });

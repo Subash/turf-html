@@ -3,11 +3,14 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { EvaluatorOptions, InitialVariables, RenderContext } from './evaluator.ts';
 import { TurfEvaluator } from './evaluator.ts';
+import type { OutputPiece, OutputSource } from './output.ts';
+import { getOutputSources, getOutputText } from './output.ts';
 import { TurfParser } from './parser.ts';
 import type { SourcePosition } from './scanner.ts';
 import TurfSyntaxError from './syntax-error.ts';
 
 export type { InitialVariables } from './evaluator.ts';
+export type { OutputSource as CompileSource } from './output.ts';
 export { default as TurfSyntaxError } from './syntax-error.ts';
 export type { TurfSyntaxErrorOptions } from './syntax-error.ts';
 
@@ -20,6 +23,11 @@ export type CompileDelegate = (
   absolutePath: string,
   context: CompileDelegateContext
 ) => string | Buffer | Promise<string | Buffer>;
+
+export interface CompileResult {
+  code: string;
+  sources: OutputSource[];
+}
 
 export interface CompileOptions {
   file: string;
@@ -53,7 +61,7 @@ class Compiler {
     this.#ancestry = options.ancestry || [this.#file];
   }
 
-  async compile(): Promise<string> {
+  async compile(): Promise<OutputPiece[]> {
     const parsed = TurfParser.parse(this.#source, { file: this.#file });
 
     const options: EvaluatorOptions = {
@@ -65,10 +73,10 @@ class Compiler {
       options.compileDelegate = (requestedPath, context) => this.#renderCompile(requestedPath, context);
     }
 
-    return TurfEvaluator.evaluate(parsed, options);
+    return TurfEvaluator.evaluatePieces(parsed, options);
   }
 
-  async #renderInclude(requestedPath: string, context: RenderContext): Promise<string> {
+  async #renderInclude(requestedPath: string, context: RenderContext): Promise<string | OutputPiece[]> {
     const file = await this.#resolveFile(requestedPath, context);
     const data = await readFile(file);
 
@@ -78,7 +86,7 @@ class Compiler {
     }
 
     const output = await this.#compileIncludedFile(file, data, context.variables);
-    if (context.base64) return Buffer.from(output, 'utf8').toString('base64');
+    if (context.base64) return Buffer.from(getOutputText(output), 'utf8').toString('base64');
     return output;
   }
 
@@ -92,7 +100,7 @@ class Compiler {
     return normalizedOutput;
   }
 
-  async #compileIncludedFile(file: string, data: Buffer, variables: Record<string, string>): Promise<string> {
+  async #compileIncludedFile(file: string, data: Buffer, variables: Record<string, string>): Promise<OutputPiece[]> {
     const rootDir = this.#rootDir;
     const compileDelegate = this.#compileDelegate;
     const ancestry = [...this.#ancestry, file];
@@ -178,5 +186,11 @@ function validateFile(file: unknown): asserts file is string {
 
 export default async function compile(source: string, options: CompileOptions): Promise<string> {
   validateFile(options?.file);
-  return new Compiler(source, options).compile();
+  return getOutputText(await new Compiler(source, options).compile());
+}
+
+export async function compileWithSources(source: string, options: CompileOptions): Promise<CompileResult> {
+  validateFile(options?.file);
+  const pieces = await new Compiler(source, options).compile();
+  return { code: getOutputText(pieces), sources: getOutputSources(pieces) };
 }
