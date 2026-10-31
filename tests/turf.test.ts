@@ -58,6 +58,44 @@ describe('compile', () => {
     assert.equal(directoryIndex, 'directory index\n');
   });
 
+  test('resolves compile paths without their query and passes the raw query to the delegate', async () => {
+    const file = await fixture('basic.kit');
+    for (const query of ['css', 'format=css&name=a%20b', '']) {
+      const output = await compile(`<p>\n  <!-- @compile "/file.css?${query}" -->`, {
+        file: file.input,
+        compileDelegate: (absolutePath, context) => {
+          assert.equal(absolutePath, path.resolve(path.dirname(file.input), 'file.css'));
+          assert.deepEqual(context, {
+            file: file.input,
+            location: { line: 2, column: 8, offset: 11 },
+            query
+          });
+          return 'compiled';
+        }
+      });
+      assert.equal(output, '<p>\n  compiled');
+    }
+  });
+
+  test('preserves compile queries in nested templates and base64 directives', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'turf-query-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await fs.mkdir(path.join(root, 'partials'));
+    const partial = path.join(root, 'partials/_head.turf');
+    await fs.writeFile(partial, '<!-- @compile-base64 "../app.js?css" -->');
+    await fs.writeFile(path.join(root, 'app.js'), '');
+    const output = await compile('<!-- @include partials/head -->', {
+      file: path.join(root, 'page.turf'),
+      compileDelegate: (absolutePath, context) => {
+        assert.equal(absolutePath, path.join(root, 'app.js'));
+        assert.equal(context.file, partial);
+        assert.equal(context.query, 'css');
+        return 'a { color: red; }';
+      }
+    });
+    assert.equal(Buffer.from(output, 'base64').toString('utf8'), 'a { color: red; }');
+  });
+
   test('compiler prefers direct files over directory indexes', async () => {
     const file = await fixture('basic.kit');
     const directFile = await compile('<!-- @include precedence -->', { file: file.input });

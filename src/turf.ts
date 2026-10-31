@@ -17,6 +17,7 @@ export type { TurfSyntaxErrorOptions } from './syntax-error.ts';
 export interface CompileDelegateContext {
   file: string;
   location: SourcePosition;
+  query?: string;
 }
 
 export type CompileDelegate = (
@@ -91,9 +92,13 @@ class Compiler {
   }
 
   async #renderCompile(requestedPath: string, context: RenderContext): Promise<string> {
-    const file = await this.#resolveFile(requestedPath, context);
+    const queryIndex = requestedPath.indexOf('?');
+    const target = queryIndex === -1 ? requestedPath : requestedPath.slice(0, queryIndex);
+    const delegateContext: CompileDelegateContext = { file: this.#file, location: context.location };
+    if (queryIndex !== -1) delegateContext.query = requestedPath.slice(queryIndex + 1);
+    const file = await this.#resolveFile(target, context);
     const compileDelegate = this.#compileDelegate!;
-    const output = await compileDelegate(file, { file: this.#file, location: context.location });
+    const output = await compileDelegate(file, delegateContext);
     if (Buffer.isBuffer(output)) return output.toString('base64');
     const normalizedOutput = output.replace(/\r\n/g, '\n');
     if (context.base64) return Buffer.from(normalizedOutput, 'utf8').toString('base64');
