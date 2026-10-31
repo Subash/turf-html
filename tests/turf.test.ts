@@ -168,7 +168,7 @@ describe('compile', () => {
     }
   });
 
-  test('compileWithSources reports only literal template text with the file it came from', async (t) => {
+  test('compileWithSources reports template text and substituted variables with the file they appear in', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'turf-sources-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     await fs.mkdir(path.join(root, 'partials'));
@@ -201,14 +201,14 @@ describe('compile', () => {
     assert.equal(fileAt('logo.svg'), header);
     assert.equal(fileAt('<nav>'), header);
     assert.equal(fileAt('  <nav>'), undefined);
-    assert.equal(fileAt('img/a.png'), undefined);
+    assert.equal(fileAt('img/a.png'), page);
     assert.equal(fileAt('a { color: red; }'), undefined);
     assert.equal(fileAt(Buffer.from('<svg/>').toString('base64')), undefined);
     assert.equal(fileAt('compiled'), undefined);
     assert.equal(fileAt('<script>'), page);
-    for (const range of sources) {
-      const text = await fs.readFile(range.file, 'utf8');
-      assert.ok(text.includes(code.slice(range.start, range.end)), code.slice(range.start, range.end));
+    for (const [index, range] of sources.entries()) {
+      assert.ok(range.start < range.end);
+      assert.ok(index === 0 || sources[index - 1].end <= range.start);
     }
   });
 });

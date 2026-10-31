@@ -137,7 +137,7 @@ export class TurfEvaluator {
   #readVariable(operation: GetOperation, segment: DirectiveSegment): EvaluationResult {
     if (this.#scope.has(operation.name)) {
       const text = this.#scope.get(operation.name) as string;
-      return { output: [{ text }], silent: false };
+      return { output: [{ text, file: this.#parsed.file }], silent: false };
     }
 
     if (operation.optional) return { output: [], silent: false };
